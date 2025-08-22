@@ -6,35 +6,39 @@ import (
 	"chat-app/internal/rabbitmq"
 	"encoding/json"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
-
-	config := config.LoadConfig("config")
-	log.Printf("Загрузка конфигурации: %v\n", config)
+	cfg, err := config.LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("Error loading config file: %v", err)
+	}
+	log.Printf("Configuration loaded: %+v\n", cfg)
 
 	// Подключение к RabbitMQ
-	conn, err := amqp.Dial(config.RabbitMQURL)
+	conn, err := amqp.Dial(cfg.RabbitMQ.URL)
 	if err != nil {
-		log.Fatalf("Ошибка подключения к RabbitMQ: %v", err)
+		log.Fatalf("RabbitMQ connection error: %v", err)
 	}
 	defer conn.Close()
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("Ошибка создания канала: %v", err)
+		log.Fatalf("Channel creation error: %v", err)
 	}
 	defer ch.Close()
 
 	// Объявление exchange
 	if err := ch.ExchangeDeclare(
-		config.ExchangeName,
+		cfg.Chat.Exchange,
 		"direct",
 		true,  // durable
 		false, // autoDelete
@@ -42,21 +46,18 @@ func main() {
 		false, // noWait
 		nil,   // arguments
 	); err != nil {
-		log.Fatalf("Ошибка объявления exchange: %v", err)
+		log.Fatalf("Exchange declaration error: %v", err)
 	}
+
+	// Запуск health check сервера в отдельной горутине
+	healthServer := startHealthServer(cfg.App.ServerPort)
+	defer healthServer.Close()
 
 	// Обработка сигналов завершения
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Println("Получен сигнал завершения. Закрытие соединения...")
-		conn.Close()
-	}()
 
-	log.Println("Сервер запущен. Ожидание сообщений...")
-
-	// Слушаем общую очередь для обработки сообщений
+	// Слушаем очередь для обработки сообщений
 	messages, err := ch.Consume(
 		"chat_messages", // queue
 		"chat_server",   // consumer
@@ -67,23 +68,40 @@ func main() {
 		nil,             // args
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Consume error: %v", err)
 	}
-	for msg := range messages {
-		go handleMessage(ch, msg)
+
+	log.Println("Server started. Waiting for messages...")
+
+	// Главный цикл обработки
+	for {
+		select {
+		case msg := <-messages:
+			go HandleMessage(ch, msg)
+		case sig := <-sigChan:
+			log.Printf("Received signal: %v. Shutting down...", sig)
+			return
+		}
 	}
 }
 
-func handleMessage(ch rabbitmq.Channel, msg amqp.Delivery) {
+func HandleMessage(ch rabbitmq.Channel, msg amqp.Delivery) {
 	var chatMsg models.ChatMessage
-	json.Unmarshal(msg.Body, &chatMsg)
+	if err := json.Unmarshal(msg.Body, &chatMsg); err != nil {
+		log.Printf("Message parsing error: %v", err)
+		return
+	}
 
-	// Отправляем сообщение конкретному пользователю
+	if chatMsg.To == "" {
+		log.Printf("Empty recipient in message from %s", chatMsg.From)
+		return
+	}
+
 	err := ch.Publish(
-		"chat_direct",      // exchange
-		"user."+chatMsg.To, // routing key
-		false,              // mandatory
-		false,              // immediate
+		"chat_direct",
+		"user."+chatMsg.To,
+		false,
+		false,
 		amqp.Publishing{
 			ContentType: "application/json",
 			Body:        msg.Body,
@@ -94,40 +112,27 @@ func handleMessage(ch rabbitmq.Channel, msg amqp.Delivery) {
 	}
 }
 
-func health() {
-	// Создаем слушатель TCP-соединений
-	listener, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		log.Fatalf("Ошибка при создании сервера: %v", err)
+func startHealthServer(port int) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	server := &http.Server{
+		Addr:         ":" + strconv.Itoa(port),
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  15 * time.Second,
 	}
-	defer listener.Close() // Гарантированное закрытие слушателя
 
-	log.Println("Сервер запущен на :8080")
-
-	// Бесконечный цикл для обработки соединений
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Ошибка принятия соединения: %v", err)
-			continue
+	go func() {
+		log.Printf("Health check server starting on port %d", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Health server error: %v", err)
 		}
+	}()
 
-		// Обработка каждого соединения в отдельной горутине
-		go func(c net.Conn) {
-			defer c.Close()
-
-			buffer := make([]byte, 1024)
-			n, err := c.Read(buffer)
-			if err != nil {
-				log.Printf("Ошибка чтения данных: %v", err)
-				return
-			}
-
-			log.Printf("Получено сообщение: %s", buffer[:n])
-			_, err = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"))
-			if err != nil {
-				log.Printf("Ошибка отправки ответа: %v", err)
-			}
-		}(conn)
-	}
+	return server
 }
