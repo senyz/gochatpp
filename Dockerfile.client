@@ -12,4 +12,4 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /chat-client .
 
-CMD ["./chat-client"]
+#CMD ["./chat-client"]

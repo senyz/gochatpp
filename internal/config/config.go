@@ -31,7 +31,7 @@ func LoadConfig(filename string) (cfg *Config) {
 	cfg, err := Load(filename)
 	if err != nil {
 		cfg = &Config{
-			RabbitMQURL:  getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			RabbitMQURL:  getEnv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/"),
 			ExchangeName: getEnv("CHAT_EXCHANGE", "chat_direct"),
 			AuthFile:     getEnv("AUTH_FILE", "users.json"),
 			LogLevel:     getEnv("LOG_LEVEL", "info"),

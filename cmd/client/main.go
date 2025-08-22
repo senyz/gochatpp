@@ -30,7 +30,7 @@ func main() {
 	}
 
 	// Подключение к RabbitMQ
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
 	if err != nil {
 		log.Fatalf("Ошибка подключения: %v", err)
 	}
