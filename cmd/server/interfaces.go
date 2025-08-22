@@ -1,6 +1,8 @@
-package rabbitmq
+package main
 
 import (
+	config "chat-app/internal/config"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -10,5 +12,19 @@ type Channel interface {
 	ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error
 	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
 	QueueBind(name, key, exchange string, noWait bool, args amqp.Table) error
+	Close() error
+}
+
+type ConfigLoader interface {
+	LoadConfig(path string) (config.Config, error)
+}
+
+type HealthServer interface {
+	StartHealthServer(port int) error
+	StopHealthServer() error
+}
+
+type MessageBroker interface {
+	Dial(url string) (Channel, error)
 	Close() error
 }

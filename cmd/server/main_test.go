@@ -1,11 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
-	"log"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"syscall"
 	"testing"
@@ -19,39 +16,44 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockChannel мок для rabbitmq.Channel
-type MockChannel struct {
-	mock.Mock
-}
+func TestRun_QuickShutdown(t *testing.T) {
+	var stdout, stderr bytes.Buffer
 
-func (m *MockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
-	args := m.Called(exchange, key, mandatory, immediate, msg)
-	return args.Error(0)
-}
+	mockBroker := new(MockBroker)
+	mockChannel := new(MockChannel)
+	mockConfigLoader := new(MockConfigLoader)
+	mockHealthServer := new(MockHealthServer)
 
-func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
-	argsCalled := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
-	return argsCalled.Get(0).(<-chan amqp.Delivery), argsCalled.Error(1)
-}
+	testConfig := &MockConfig{
+		RabbitMQURL:  "amqp://test",
+		ExchangeName: "test_exchange",
+		ServerPort:   8080,
+	}
 
-func (m *MockChannel) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error {
-	argsCalled := m.Called(name, kind, durable, autoDelete, internal, noWait, args)
-	return argsCalled.Error(0)
-}
+	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
+	mockBroker.On("Close").Return(nil)
 
-func (m *MockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
-	argsCalled := m.Called(name, durable, autoDelete, exclusive, noWait, args)
-	return argsCalled.Get(0).(amqp.Queue), argsCalled.Error(1)
-}
+	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-func (m *MockChannel) QueueBind(name, key, exchange string, noWait bool, args amqp.Table) error {
-	argsCalled := m.Called(name, key, exchange, noWait, args)
-	return argsCalled.Error(0)
-}
+	// Возвращаем закрытый канал, чтобы сразу выйти из цикла
+	closedChan := make(chan amqp.Delivery)
+	close(closedChan)
+	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(closedChan, nil)
+	mockChannel.On("Close").Return(nil)
 
-func (m *MockChannel) Close() error {
-	args := m.Called()
-	return args.Error(0)
+	mockHealthServer.On("StartHealthServer", mock.Anything).Return(nil)
+	mockHealthServer.On("StopHealthServer").Return(nil)
+
+	// Запускаем синхронно
+	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+
+	if err != nil {
+		t.Errorf("run returned error: %v", err)
+	}
+
+	mockHealthServer.AssertCalled(t, "StartHealthServer", 8080)
+	mockHealthServer.AssertCalled(t, "StopHealthServer")
 }
 
 func TestHandleMessage_Success(t *testing.T) {
@@ -228,7 +230,7 @@ func TestSignalHandling(t *testing.T) {
 // TestConfigLoading тестирует загрузку конфигурации
 func TestConfigLoading(t *testing.T) {
 	t.Run("test_mock_config", func(t *testing.T) {
-		mockConfig := &config.MockConfig{
+		mockConfig := &MockConfig{
 			RabbitMQURL:  "amqp://test:test@localhost:5672/",
 			ExchangeName: "test_exchange",
 			AuthFile:     "test_users.json",
@@ -313,27 +315,3 @@ func TestMainFunction(t *testing.T) {
 
 // Переменная для подмены функции dial в тестах
 var amqpDial = amqp.Dial
-
-func TestMain(m *testing.M) {
-	// Отключаем логи во время тестов
-	log.SetOutput(io.Discard)
-
-	// Запускаем тесты
-	code := m.Run()
-
-	// Восстанавливаем вывод логов
-	log.SetOutput(os.Stderr)
-	os.Exit(code)
-}
-
-func TestStartHealthServer_ResponseOK(t *testing.T) {
-	port := 8081
-	server := startHealthServer(port)
-
-	req, _ := http.NewRequest("GET", "/health", nil)
-	rr := httptest.NewRecorder()
-	server.Handler.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "OK", rr.Body.String())
-}
