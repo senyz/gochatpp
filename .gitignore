@@ -1,2 +1,4 @@
 rabbitmq/*
 config.yaml
+coverage
+coverage.out

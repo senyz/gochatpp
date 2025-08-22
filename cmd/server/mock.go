@@ -22,6 +22,10 @@ func (m *MockChannel) Publish(exchange, key string, mandatory, immediate bool, m
 
 func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
 	callArgs := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+
 	return callArgs.Get(0).(chan amqp.Delivery), callArgs.Error(1)
 }
 
@@ -57,7 +61,11 @@ type MockBroker struct {
 
 func (m *MockBroker) Dial(url string) (Channel, error) {
 	args := m.Called(url)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(Channel), args.Error(1)
+
 }
 
 func (m *MockBroker) Close() error {
@@ -99,6 +107,11 @@ type MockConfigLoader struct {
 
 func (m *MockConfigLoader) LoadConfig(path string) (config.Config, error) {
 	args := m.Called(path)
+
+	// Правильная обработка возвращаемых значений
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(config.Config), args.Error(1)
 }
 
