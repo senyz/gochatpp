@@ -15,7 +15,7 @@ import (
 )
 
 // run функция, которую можно тестировать
-func run(args []string, stdout io.Writer, stderr io.Writer,
+func run(stderr io.Writer,
 	broker MessageBroker, configLoader ConfigLoader,
 	healthServer HealthServer) error {
 	// проверки на nil
@@ -62,7 +62,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer,
 	}
 
 	// Запуск health check сервера
-	if err := healthServer.StartHealthServer(cfg.GetServerPort()); err != nil {
+	if err := healthServer.StartHealthServer(ctx, cfg.GetServerPort()); err != nil {
 		return fmt.Errorf("health server start error: %v", err)
 	}
 	defer healthServer.StopHealthServer()

@@ -2,6 +2,7 @@ package main
 
 import (
 	config "chat-app/internal/config"
+	"context"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -20,7 +21,7 @@ type ConfigLoader interface {
 }
 
 type HealthServer interface {
-	StartHealthServer(port int) error
+	StartHealthServer(ctx context.Context, port int) error
 	StopHealthServer() error
 }
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,7 +13,7 @@ type RealHealthServer struct {
 	server *http.Server
 }
 
-func (s *RealHealthServer) StartHealthServer(port int) error {
+func (s *RealHealthServer) StartHealthServer(ctx context.Context, port int) error {
 	// Создаем канал для передачи ошибок из горутины
 	errChan := make(chan error, 1)
 
@@ -43,6 +45,12 @@ func (s *RealHealthServer) StartHealthServer(port int) error {
 	}()
 	// Ждем завершения или отмены контекста
 	select {
+	case <-ctx.Done():
+		// завершаем сервер при отмене контекста
+		if err := server.Shutdown(context.Background()); err != nil {
+			return fmt.Errorf("server shutdown error: %w", err)
+		}
+		return ctx.Err()
 	case err := <-errChan:
 		if err == nil {
 			return nil

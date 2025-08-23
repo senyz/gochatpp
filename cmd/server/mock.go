@@ -2,9 +2,11 @@ package main
 
 import (
 	config "chat-app/internal/config"
+	"context"
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/mock"
@@ -121,7 +123,7 @@ type MockHealthServer struct {
 	listener net.Listener
 }
 
-func (m *MockHealthServer) StartHealthServer(port int) error {
+func (m *MockHealthServer) StartHealthServer(ctx context.Context, port int) error {
 	args := m.Called(port)
 	if args.Error(0) != nil {
 		return args.Error(0)
@@ -135,8 +137,11 @@ func (m *MockHealthServer) StartHealthServer(port int) error {
 	})
 
 	m.server = &http.Server{
-		Addr:    ":" + strconv.Itoa(port),
-		Handler: mux,
+		Addr:         ":" + strconv.Itoa(port),
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  15 * time.Second,
 	}
 
 	// Проверяем доступность порта
@@ -146,9 +151,7 @@ func (m *MockHealthServer) StartHealthServer(port int) error {
 	}
 	m.listener = listener
 
-	go func() {
-		m.server.Serve(listener)
-	}()
+	m.server.Serve(listener)
 
 	return nil
 }

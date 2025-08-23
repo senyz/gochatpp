@@ -24,7 +24,7 @@ func main() {
 	configLoader := &RealConfigLoader{}
 	healthServer := &RealHealthServer{}
 
-	if err := run(os.Args, os.Stdout, os.Stderr, broker, configLoader, healthServer); err != nil {
+	if err := run(os.Stderr, broker, configLoader, healthServer); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

@@ -35,7 +35,7 @@ var mockConfig = &MockConfig{
 }
 
 func TestRun_QuickShutdown(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -58,7 +58,7 @@ func TestRun_QuickShutdown(t *testing.T) {
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
 	// Запускаем синхронно
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	if err != nil {
 		t.Errorf("run returned error: %v", err)
@@ -319,7 +319,7 @@ func TestMainFunction(t *testing.T) {
 }
 
 func TestRun_HealthServerStartError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -335,14 +335,14 @@ func TestRun_HealthServerStartError(t *testing.T) {
 
 	mockHealthServer.On("StartHealthServer", 8081).Return(fmt.Errorf("health server error"))
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "health server start error")
 }
 
 func TestRun_ConfigLoadError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockConfigLoader := new(MockConfigLoader)
@@ -350,14 +350,14 @@ func TestRun_ConfigLoadError(t *testing.T) {
 
 	mockConfigLoader.On("LoadConfig", "config.yaml").Return(nil, fmt.Errorf("config error"))
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config error")
 }
 
 func TestRun_RabbitMQConnectionError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockConfigLoader := new(MockConfigLoader)
@@ -366,14 +366,14 @@ func TestRun_RabbitMQConnectionError(t *testing.T) {
 	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(nil, fmt.Errorf("connection failed"))
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "RabbitMQ connection error")
 }
 
 func TestRun_ConsumeError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -391,7 +391,7 @@ func TestRun_ConsumeError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "consume error")
@@ -487,7 +487,7 @@ func TestHandleMessage_TableDriven(t *testing.T) {
 
 // Тест на ошибку объявления exchange:
 func TestRun_ExchangeDeclareError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -504,7 +504,7 @@ func TestRun_ExchangeDeclareError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exchange declaration error")
@@ -512,10 +512,10 @@ func TestRun_ExchangeDeclareError(t *testing.T) {
 	// Health server должен остановиться даже при ошибке
 	mockHealthServer.AssertCalled(t, "StopHealthServer")
 }
-/*
+
 // Тест на закрытие канала сообщений:
 func TestRun_MessageChannelClosed(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -537,7 +537,7 @@ func TestRun_MessageChannelClosed(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "message channel closed")
@@ -547,7 +547,7 @@ func TestRun_MessageChannelClosed(t *testing.T) {
 
 // Тест на обработку сигналов:
 func TestRun_SignalHandling(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -571,7 +571,7 @@ func TestRun_SignalHandling(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	// Должен завершиться без ошибки (нормальное завершение по закрытию канала)
 	assert.NoError(t, err)
@@ -580,7 +580,7 @@ func TestRun_SignalHandling(t *testing.T) {
 
 // Тест на обработку сообщений:
 func TestRun_MessageProcessing(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -610,7 +610,7 @@ func TestRun_MessageProcessing(t *testing.T) {
 	// Запускаем в горутине и завершаем через короткое время
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+		errChan <- run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 	}()
 
 	// Даем время обработать сообщения
@@ -632,7 +632,7 @@ func TestRun_MessageProcessing(t *testing.T) {
 
 // Тест на ошибки в HealthServer:
 func TestRun_HealthServerStopError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -653,7 +653,7 @@ func TestRun_HealthServerStopError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(fmt.Errorf("stop error"))
 
-	err := run([]string{}, &stdout, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
 
 	// Ошибка остановки health server не должна влиять на основную логику
 	assert.Error(t, err) // Но основная ошибка - закрытие канала
@@ -661,4 +661,3 @@ func TestRun_HealthServerStopError(t *testing.T) {
 
 	mockHealthServer.AssertCalled(t, "StopHealthServer")
 }
-*/
