@@ -18,18 +18,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type Queue struct {
-	Name      string `json:"name"`
-	VHost     string `json:"vhost"`
-	Messages  int    `json:"messages"`
-	Consumers int    `json:"consumers"`
-	// Другие поля по необходимости
-}
-
 // run функция, которую можно тестировать
-func run(stderr io.Writer,
-	broker MessageBroker, configLoader ConfigLoader,
-	healthServer HealthServer) error {
+func Run(ctx context.Context, stderr io.Writer, // Добавляем контекст первым параметром
+	broker models.MessageBroker, configLoader models.ConfigLoader,
+	healthServer models.HealthServer) error {
+
 	// Проверка обязательных зависимостей
 	if broker == nil || configLoader == nil || healthServer == nil {
 		return fmt.Errorf("required dependencies are not provided")
@@ -37,8 +30,8 @@ func run(stderr io.Writer,
 
 	log.SetOutput(stderr)
 
-	// Создаем контекст для graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	// Используем переданный контекст вместо создания нового
+	ctx, cancel := context.WithCancel(ctx) // Теперь на основе внешнего контекста
 	defer cancel()
 
 	cfg, err := configLoader.LoadConfig("config.yaml")
@@ -116,7 +109,7 @@ func run(stderr io.Writer,
 					log.Printf("Error parsing message: %v", err)
 					continue
 				}
-				userQueues, err := getActiveUserQueues(cfg)
+				userQueues, err := GetActiveUserQueues(cfg)
 				if err != nil {
 					log.Printf("Error getting active user queues: %v", err)
 				}
@@ -124,11 +117,10 @@ func run(stderr io.Writer,
 				wg.Add(1)
 				go func(m amqp.Delivery) {
 					defer wg.Done()
-
-					handleBroadcastMessage(ch, m, chatMsg, userQueues)
+					HandleBroadcastMessage(ch, m, chatMsg, userQueues)
 				}(msg)
 
-			case <-ctx.Done():
+			case <-ctx.Done(): // Слушаем внешний контекст
 				log.Println("Stopping message processing")
 				return
 			}
@@ -142,6 +134,8 @@ func run(stderr io.Writer,
 		cancel() // Отменяем контекст
 	case <-messageDone:
 		log.Println("Message processing stopped unexpectedly")
+	case <-ctx.Done(): // Также слушаем внешний контекст
+		log.Println("Context cancelled. Shutting down...")
 	}
 
 	// Ждем завершения всех обработчиков сообщений с таймаутом
@@ -160,7 +154,8 @@ func run(stderr io.Writer,
 
 	return nil
 }
-func getActiveUserQueues(cfg config.Config) ([]Queue, error) {
+
+func GetActiveUserQueues(cfg config.Config) ([]models.Queue, error) {
 	// Используем API RabbitMQ Management для получения списка очередей
 	managerURL := "http://" + cfg.GetRabbitMQURL() + ":15672/api/queues"
 
@@ -182,13 +177,13 @@ func getActiveUserQueues(cfg config.Config) ([]Queue, error) {
 		return nil, fmt.Errorf("RabbitMQ API returned status: %d", resp.StatusCode)
 	}
 
-	var queues []Queue
+	var queues []models.Queue
 	if err := json.NewDecoder(resp.Body).Decode(&queues); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %v", err)
 	}
 
 	// Фильтруем только очереди, связанные с чатом
-	var chatQueues []Queue
+	var chatQueues []models.Queue
 	for _, queue := range queues {
 		if isChatQueue(queue.Name) {
 			chatQueues = append(chatQueues, queue)

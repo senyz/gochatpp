@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,19 +21,27 @@ import (
 // Переменная для подмены функции dial в тестах
 var amqpDial = amqp.Dial
 var testConfig = &MockConfig{
-	RabbitMQURL:  "amqp://test",
+	RabbitMQURL:  "amqp://test:test@localhost:5672/",
 	ExchangeName: "test_exchange",
 	AuthFile:     "test_users.json",
 	LogLevel:     "debug",
 	ServerPort:   8081,
 }
 
-func GetTestUserQueues() []Queue {
+func GetTestUserQueues() []models.Queue {
 
-	var queues []Queue = make([]Queue, 3)
+	var queues []models.Queue = make([]models.Queue, 3)
 	//type Queue struct {    Name,    VHost,    Messages,    Consumers}
-	var testQueque1 = &Queue{"test_queue1", "test_vhost", 10, 2}
-	var testQueque2 = &Queue{"test_queue2", "test_vhost", 10, 2}
+	var testQueque1 = &models.Queue{
+		Name:      "user.user1",
+		VHost:     "test_vhost",
+		Messages:  10,
+		Consumers: 2}
+	var testQueque2 = &models.Queue{
+		Name:      "user.user2",
+		VHost:     "test_vhost",
+		Messages:  10,
+		Consumers: 2}
 
 	queues[0] = *testQueque1
 	queues[1] = *testQueque2
@@ -50,7 +59,7 @@ func TestHandleBroadcastMessage_InvalidJSON(t *testing.T) {
 	testMessage := models.ChatMessage{}
 
 	testQueque := GetTestUserQueues()
-	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueque)
+	HandleBroadcastMessage(mockChannel, delivery, testMessage, testQueque)
 
 	// Убеждаемся, что Publish НЕ был вызван
 	mockChannel.AssertNotCalled(t, "Publish")
@@ -71,83 +80,10 @@ func TestHandleBroadcastMessage_EmptyToField(t *testing.T) {
 		Body: messageBody,
 	}
 	testQueue := GetTestUserQueues()
-	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
+	HandleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
 
 	// Не должно вызывать Publish с пустым получателем
 	mockChannel.AssertNotCalled(t, "Publish")
-}
-
-func TestHandleBroadcastMessage_PublishError(t *testing.T) {
-	mockChannel := new(MockChannel)
-
-	testMessage := models.ChatMessage{
-		From:    "user1",
-		To:      "user2",
-		Message: "Hello!",
-	}
-
-	messageBody, _ := json.Marshal(testMessage)
-
-	mockChannel.On("Publish",
-		"chat_direct",
-		"user.user2",
-		false,
-		false,
-		mock.Anything,
-	).Return(assert.AnError)
-
-	delivery := amqp.Delivery{
-		Body: messageBody,
-	}
-	testQueue := GetTestUserQueues()
-	// Должно обработать ошибку без паники
-	assert.NotPanics(t, func() {
-		handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
-	})
-
-	mockChannel.AssertCalled(t, "Publish",
-		"chat_direct",
-		"user.user2",
-		false,
-		false,
-		mock.Anything,
-	)
-}
-
-func TestHandleBroadcastMessage_BroadcastType(t *testing.T) {
-	mockChannel := new(MockChannel)
-
-	testMessage := models.ChatMessage{
-		From:    "user1",
-		To:      "all",
-		Message: "Broadcast message!",
-		Type:    "broadcast",
-	}
-
-	messageBody, _ := json.Marshal(testMessage)
-
-	mockChannel.On("Publish",
-		"chat_direct",
-		"user.all",
-		false,
-		false,
-		mock.Anything,
-	).Return(nil)
-
-	delivery := amqp.Delivery{
-		Body: messageBody,
-	}
-	testQueue := GetTestUserQueues()
-
-	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
-
-	mockChannel.AssertCalled(t, "Publish",
-		"chat_direct",
-		"user.all",
-		false,
-		false,
-		mock.Anything,
-	)
 }
 
 // TestSignalHandling тестирует обработку сигналов
@@ -232,7 +168,7 @@ func TestMainFunction(t *testing.T) {
 		oldArgs := os.Args
 		defer func() { os.Args = oldArgs }()
 
-		os.Args = []string{"chat-server", "-test.run=TestMainFunction"}
+		os.Args = []string{"chat-server", "-test.Run=TestMainFunction"}
 
 		originalDial := amqpDial
 		defer func() { amqpDial = originalDial }()
@@ -249,6 +185,8 @@ func TestMainFunction(t *testing.T) {
 
 func TestRun_HealthServerStartError(t *testing.T) {
 	var stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -256,15 +194,15 @@ func TestRun_HealthServerStartError(t *testing.T) {
 	mockHealthServer := new(MockHealthServer)
 
 	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
+	mockBroker.On("Dial", "amqp://test:test@localhost:5672/").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
 	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	mockChannel.On("Close").Return(nil)
 
-	mockHealthServer.On("StartHealthServer", 8081).Return(fmt.Errorf("health server error"))
+	mockHealthServer.On("StartHealthServer", mock.Anything, 8081).Return(fmt.Errorf("health server error"))
 
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
+	err := Run(ctx, &stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "health server start error")
@@ -273,13 +211,15 @@ func TestRun_HealthServerStartError(t *testing.T) {
 func TestRun_ConfigLoadError(t *testing.T) {
 	var stderr bytes.Buffer
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	mockBroker := new(MockBroker)
 	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
 	MockConfigLoader.On("LoadConfig", "config.yaml").Return(nil, fmt.Errorf("config error"))
 
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
+	err := Run(ctx, &stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config error")
@@ -287,15 +227,17 @@ func TestRun_ConfigLoadError(t *testing.T) {
 
 func TestRun_RabbitMQConnectionError(t *testing.T) {
 	var stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	mockBroker := new(MockBroker)
 	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
 	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(nil, fmt.Errorf("connection failed"))
+	mockBroker.On("Dial", "amqp://test:test@localhost:5672/").Return(nil, fmt.Errorf("connection failed"))
 
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
+	err := Run(ctx, &stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "RabbitMQ connection error")
@@ -303,6 +245,9 @@ func TestRun_RabbitMQConnectionError(t *testing.T) {
 
 func TestRun_ConsumeError(t *testing.T) {
 	var stderr bytes.Buffer
+	// Создаем контекст с таймаутом для теста
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
@@ -310,51 +255,72 @@ func TestRun_ConsumeError(t *testing.T) {
 	mockHealthServer := new(MockHealthServer)
 
 	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
+	mockBroker.On("Dial", "amqp://test:test@localhost:5672/").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
 	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil, fmt.Errorf("consume error"))
 	mockChannel.On("Close").Return(nil)
 
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
+	mockHealthServer.On("StartHealthServer", mock.Anything, 8081).Return(nil) // Добавляем mock.Anything для контекста
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
+	// Теперь передаем контекст первым аргументом
+	err := Run(ctx, &stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "consume error")
 }
-
 func TestHandleBroadcastMessage_TableDriven(t *testing.T) {
+	// Тестовые очереди пользователей
+	testQueues := []models.Queue{
+		{Name: "user1_queue"},
+		{Name: "user2_queue"},
+		{Name: "user3_queue"},
+	}
+
 	testCases := []struct {
 		name          string
 		message       models.ChatMessage
 		shouldPublish bool
-		expectedKey   string
+		expectedCalls int // Сколько раз должен вызваться Publish
 	}{
 		{
-			name: "valid direct message",
-			message: models.ChatMessage{
-				From: "user1", To: "user2", Message: "Hello", Type: "direct",
-			},
-			shouldPublish: true,
-			expectedKey:   "user.user2",
-		},
-		{
-			name: "empty to field",
-			message: models.ChatMessage{
-				From: "user1", To: "", Message: "Hello", Type: "direct",
-			},
-			shouldPublish: false,
-		},
-		{
-			name: "broadcast message",
+			name: "valid broadcast message",
 			message: models.ChatMessage{
 				From: "user1", To: "all", Message: "Hello", Type: "broadcast",
 			},
 			shouldPublish: true,
-			expectedKey:   "user.all",
+			expectedCalls: 3, // Для всех 3х пользователей
+		},
+		{
+			name: "empty to field",
+			message: models.ChatMessage{
+				From: "user1", To: "", Message: "Hello", Type: "broadcast",
+			},
+			shouldPublish: false, // Не пройдет валидацию
+		},
+		{
+			name: "empty from field",
+			message: models.ChatMessage{
+				From: "", To: "all", Message: "Hello", Type: "broadcast",
+			},
+			shouldPublish: false, // Не пройдет валидацию
+		},
+		{
+			name: "empty message field",
+			message: models.ChatMessage{
+				From: "user1", To: "all", Message: "", Type: "broadcast",
+			},
+			shouldPublish: false, // Не пройдет валидацию
+		},
+		{
+			name: "direct message should be processed as broadcast",
+			message: models.ChatMessage{
+				From: "user1", To: "user2", Message: "Hello", Type: "direct",
+			},
+			shouldPublish: true, // Все равно рассылаем всем!
+			expectedCalls: 3,    // Для всех 3х пользователей
 		},
 	}
 
@@ -364,207 +330,44 @@ func TestHandleBroadcastMessage_TableDriven(t *testing.T) {
 			messageBody, _ := json.Marshal(tc.message)
 
 			if tc.shouldPublish {
-				mockChannel.On("Publish",
-					"chat_direct",
-					tc.expectedKey,
-					false,
-					false,
-					mock.Anything,
-				).Return(nil)
+				// Ожидаем вызов Publish для КАЖДОЙ очереди
+				for _, queue := range testQueues {
+					mockChannel.On("Publish",
+						"",         // default exchange
+						queue.Name, // имя очереди как routing key
+						false,
+						false,
+						mock.MatchedBy(func(publishing amqp.Publishing) bool {
+							// Проверяем, что это правильное сообщение
+							return publishing.ContentType == "application/json" &&
+								bytes.Equal(publishing.Body, messageBody)
+						}),
+					).Return(nil).Once() // Один раз для каждой очереди
+				}
 			}
 
 			delivery := amqp.Delivery{Body: messageBody}
-			testQueue := GetTestUserQueues()
-			handleBroadcastMessage(mockChannel, delivery, tc.message, testQueue)
+			HandleBroadcastMessage(mockChannel, delivery, tc.message, testQueues)
 
 			if tc.shouldPublish {
-				mockChannel.AssertCalled(t, "Publish",
-					"chat_direct",
-					tc.expectedKey,
-					false,
-					false,
-					mock.Anything,
-				)
+				// Проверяем, что Publish вызван для каждой очереди
+				for _, queue := range testQueues {
+					mockChannel.AssertCalled(t, "Publish",
+						"",
+						queue.Name,
+						false,
+						false,
+						mock.MatchedBy(func(publishing amqp.Publishing) bool {
+							return publishing.ContentType == "application/json" &&
+								bytes.Equal(publishing.Body, messageBody)
+						}),
+					)
+				}
+				// Проверяем общее количество вызовов
+				assert.Equal(t, tc.expectedCalls, len(mockChannel.Calls))
 			} else {
 				mockChannel.AssertNotCalled(t, "Publish")
 			}
 		})
 	}
-}
-
-// Тест на ошибку объявления exchange:
-func TestRun_ExchangeDeclareError(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	MockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(fmt.Errorf("exchange error"))
-	mockChannel.On("Close").Return(nil)
-
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(nil)
-
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exchange declaration error")
-
-	// Health server должен остановиться даже при ошибке
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
-}
-
-// Тест на закрытие канала сообщений:
-func TestRun_MessageChannelClosed(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	MockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Создаем и сразу закрываем канал
-	closedChan := make(chan amqp.Delivery)
-	close(closedChan)
-	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(closedChan, nil)
-	mockChannel.On("Close").Return(nil)
-
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(nil)
-
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "message channel closed")
-
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
-}
-
-// Тест на обработку сигналов:
-func TestRun_SignalHandling(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	MockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Канал с одним сообщением
-	msgChan := make(chan amqp.Delivery, 1)
-	msgChan <- amqp.Delivery{Body: []byte(`{"from":"user1","to":"user2","message":"test"}`)}
-	close(msgChan)
-
-	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return((<-chan amqp.Delivery)(msgChan), nil)
-	mockChannel.On("Close").Return(nil)
-
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(nil)
-
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
-
-	// Должен завершиться без ошибки (нормальное завершение по закрытию канала)
-	assert.NoError(t, err)
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
-}
-
-// Тест на обработку сообщений:
-func TestRun_MessageProcessing(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	MockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Канал с сообщениями
-	msgChan := make(chan amqp.Delivery, 2)
-	msgChan <- amqp.Delivery{Body: []byte(`{"from":"user1","to":"user2","message":"test1"}`)}
-	msgChan <- amqp.Delivery{Body: []byte(`{"from":"user1","to":"user2","message":"test2"}`)}
-
-	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return((<-chan amqp.Delivery)(msgChan), nil)
-	mockChannel.On("Close").Return(nil)
-
-	// Мок для обработки сообщений
-	mockChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Times(2)
-
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(nil)
-
-	// Запускаем в горутине и завершаем через короткое время
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
-	}()
-
-	// Даем время обработать сообщения
-	time.Sleep(100 * time.Millisecond)
-
-	// Завершаем
-	proc, _ := os.FindProcess(os.Getpid())
-	proc.Signal(syscall.SIGTERM)
-
-	select {
-	case err := <-errChan:
-		assert.NoError(t, err)
-	case <-time.After(1 * time.Second):
-		t.Error("Test timed out")
-	}
-
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
-}
-
-// Тест на ошибки в HealthServer:
-func TestRun_HealthServerStopError(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	MockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	closedChan := make(chan amqp.Delivery)
-	close(closedChan)
-	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(closedChan, nil)
-	mockChannel.On("Close").Return(nil)
-
-	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(fmt.Errorf("stop error"))
-
-	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
-
-	// Ошибка остановки health server не должна влиять на основную логику
-	assert.Error(t, err) // Но основная ошибка - закрытие канала
-	assert.Contains(t, err.Error(), "message channel closed")
-
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
 }

@@ -1,13 +1,17 @@
 // real_amqp.go - реализация для production
 package main
 
-import amqp "github.com/rabbitmq/amqp091-go"
+import (
+	models "chat-app/internal/models"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
 
 type RealAMQPBroker struct {
 	conn *amqp.Connection
 }
 
-func (b *RealAMQPBroker) Dial(url string) (Channel, error) {
+func (b *RealAMQPBroker) Dial(url string) (models.Channel, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, err

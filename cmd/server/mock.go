@@ -2,17 +2,12 @@ package main
 
 import (
 	config "chat-app/internal/config"
+	"chat-app/internal/models"
 	"context"
-	"net"
-	"net/http"
-	"strconv"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/mock"
 )
-
-
 
 // MockChannel мок для rabbitmq.Channel
 type MockChannel struct {
@@ -53,9 +48,9 @@ func (m *MockChannel) Close() error {
 	return args.Error(0)
 }
 
-func (m *MockChannel) Dial(url string) (Channel, error) {
+func (m *MockChannel) Dial(url string) (models.Channel, error) {
 	args := m.Called(url)
-	return args.Get(0).(Channel), args.Error(1)
+	return args.Get(0).(models.Channel), args.Error(1)
 }
 
 // MockBroker implements MessageBroker
@@ -63,12 +58,12 @@ type MockBroker struct {
 	mock.Mock
 }
 
-func (m *MockBroker) Dial(url string) (Channel, error) {
+func (m *MockBroker) Dial(url string) (models.Channel, error) {
 	args := m.Called(url)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(Channel), args.Error(1)
+	return args.Get(0).(models.Channel), args.Error(1)
 
 }
 
@@ -129,48 +124,17 @@ func (m *MockConfigLoader) LoadConfig(path string) (config.Config, error) {
 
 type MockHealthServer struct {
 	mock.Mock
-	server   *http.Server
-	listener net.Listener
+	// Убираем реальные поля сервера - это же мок!
+	// server   *http.Server
+	// listener net.Listener
 }
 
 func (m *MockHealthServer) StartHealthServer(ctx context.Context, port int) error {
-	args := m.Called(port)
-	if args.Error(0) != nil {
-		return args.Error(0)
-	}
-
-	// Опционально: реально запускаем сервер для интеграционных тестов
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-
-	m.server = &http.Server{
-		Addr:         ":" + strconv.Itoa(port),
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  15 * time.Second,
-	}
-
-	// Проверяем доступность порта
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		return err
-	}
-	m.listener = listener
-
-	m.server.Serve(listener)
-
-	return nil
+	args := m.Called(ctx, port) // Передаем оба аргумента
+	return args.Error(0)        // Возвращаем только одну ошибку!
 }
 
 func (m *MockHealthServer) StopHealthServer() error {
 	args := m.Called()
-	if m.server != nil && m.listener != nil {
-		m.server.Close()
-		m.listener.Close()
-	}
-	return args.Error(0)
+	return args.Error(0) // Возвращаем ошибку
 }

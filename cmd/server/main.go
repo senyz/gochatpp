@@ -2,7 +2,10 @@ package main
 
 import (
 	"chat-app/internal/config"
+	health "chat-app/internal/health"
 	models "chat-app/internal/models"
+	"context"
+
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,9 +26,13 @@ func (r *RealConfigLoader) LoadConfig(configPath string) (cfg config.Config, err
 func main() {
 	broker := &RealAMQPBroker{}
 	configLoader := &RealConfigLoader{}
-	healthServer := &RealHealthServer{}
+	healthServer := &health.RealHealthServer{}
 
-	if err := run(os.Stderr, broker, configLoader, healthServer); err != nil {
+	// Создаем контекст для graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := Run(ctx, os.Stderr, broker, configLoader, healthServer); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -34,8 +41,14 @@ func main() {
 // func handleBroadcastMessage(ch Channel, msg amqp.Delivery, cfg config.Config) {
 
 // handleBroadcastMessage рассылает broadcast всем активным пользователям
-func handleBroadcastMessage(ch Channel, msg amqp.Delivery, chatMsg models.ChatMessage, userQueues []Queue) {
+func HandleBroadcastMessage(ch models.Channel, msg amqp.Delivery, chatMsg models.ChatMessage, userQueues []models.Queue) {
 	log.Printf("Processing broadcast from %s: %s", chatMsg.From, chatMsg.Message)
+
+	// Валидация сообщения
+	if chatMsg.From == "" || chatMsg.Message == "" || chatMsg.To == "" {
+		log.Printf("Invalid message: empty from or message field")
+		return
+	}
 
 	// Рассылаем сообщение ВСЕМ пользователям, включая отправителя
 	successCount := 0
@@ -68,14 +81,14 @@ func handleBroadcastMessage(ch Channel, msg amqp.Delivery, chatMsg models.ChatMe
 }
 
 // HandleMessage обрабатывает входящие сообщения из очереди chat_messages
-func HandleMessage(ch Channel, delivery amqp.Delivery, cfg config.Config) {
+func HandleMessage(ch models.Channel, delivery amqp.Delivery, cfg config.Config) {
 	var chatMsg models.ChatMessage
 
 	if err := json.Unmarshal(delivery.Body, &chatMsg); err != nil {
 		log.Printf("Error parsing JSON: %v", err)
 		return
 	}
-	chatQueue, err := getActiveUserQueues(cfg)
+	chatQueue, err := GetActiveUserQueues(cfg)
 	if err != nil {
 		log.Printf("Error getting active user queues: %v", err)
 
@@ -88,7 +101,7 @@ func HandleMessage(ch Channel, delivery amqp.Delivery, cfg config.Config) {
 
 	// Определяем тип сообщения по routing key или полю Type
 	if delivery.RoutingKey == "broadcast" || chatMsg.Type == "broadcast" {
-		handleBroadcastMessage(ch, delivery, chatMsg, chatQueue)
+		HandleBroadcastMessage(ch, delivery, chatMsg, chatQueue)
 	} else {
 		// Direct сообщения просто логируем (они уже доставлены напрямую)
 		log.Printf("Direct message from %s to %s: %s",

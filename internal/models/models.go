@@ -6,6 +6,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+type Queue struct {
+	Name      string `json:"name"`
+	VHost     string `json:"vhost"`
+	Messages  int    `json:"messages"`
+	Consumers int    `json:"consumers"`
+}
+
 // ChatMessage - структура сообщения
 type ChatMessage struct {
 	ID        string    `json:"id"`
