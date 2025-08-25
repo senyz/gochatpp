@@ -371,3 +371,41 @@ func TestHandleBroadcastMessage_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// Тест на ошибку объявления exchange:
+func TestRun_ExchangeDeclareError(t *testing.T) {
+	var stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel() // Важно: defer чтобы гарантировать освобождение ресурсов
+
+	mockBroker := new(MockBroker)
+	mockChannel := new(MockChannel)
+	mockConfigLoader := new(MockConfigLoader)
+	mockHealthServer := new(MockHealthServer)
+
+	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	mockBroker.On("Dial", "amqp://test:test@localhost:5672/").Return(mockChannel, nil)
+	mockBroker.On("Close").Return(nil)
+
+	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(fmt.Errorf("exchange error"))
+	mockChannel.On("Close").Return(nil)
+
+	mockHealthServer.On("StartHealthServer", mock.Anything, 8081).Return(nil)
+	mockHealthServer.On("StopHealthServer").Return(nil)
+
+	// Запускаем Run в отдельной горутине
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- Run(ctx, &stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	}()
+
+	// Ждем ошибку или таймаут
+	select {
+	case err := <-errChan:
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "exchange declaration error")
+
+	case <-time.After(2 * time.Second):
+		t.Error("Test timed out - Run function did not return")
+	}
+}

@@ -25,7 +25,7 @@ func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLoca
 		return nil, callArgs.Error(1)
 	}
 
-	return callArgs.Get(0).(chan amqp.Delivery), callArgs.Error(1)
+	return callArgs.Get(0).(<-chan amqp.Delivery), callArgs.Error(1)
 }
 
 func (m *MockChannel) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error {
