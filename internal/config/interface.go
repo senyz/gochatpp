@@ -1,6 +1,16 @@
 package config
 
+/*
+rabbitmq:
+  url: "amqp://admin:password123@rabbitmq:5672/"
+  user: "admin"
+  pass: "password123"
+  host: "rabbitmq"
+  port: 5672
+*/
 type Config interface {
+	GetRabbitUser() string
+	GetRabbitPass() string
 	GetRabbitMQURL() string
 	GetExchangeName() string
 	GetAuthFile() string
@@ -15,6 +25,12 @@ type FileConfig struct {
 	App      AppConfig      `yaml:"app"`
 }
 
+func (f *FileConfig) GetRabbitUser() string {
+	return f.RabbitMQ.User
+}
+func (f *FileConfig) GetRabbitPass() string {
+	return f.RabbitMQ.Pass
+}
 func (f *FileConfig) GetRabbitMQURL() string {
 	return f.RabbitMQ.URL
 }

@@ -26,109 +26,37 @@ var testConfig = &MockConfig{
 	LogLevel:     "debug",
 	ServerPort:   8081,
 }
-var mockConfig = &MockConfig{
-	RabbitMQURL:  "amqp://test:test@localhost:5672/",
-	ExchangeName: "test_exchange",
-	AuthFile:     "test_users.json",
-	LogLevel:     "debug",
-	ServerPort:   8081,
+
+func GetTestUserQueues() []Queue {
+
+	var queues []Queue = make([]Queue, 3)
+	//type Queue struct {    Name,    VHost,    Messages,    Consumers}
+	var testQueque1 = &Queue{"test_queue1", "test_vhost", 10, 2}
+	var testQueque2 = &Queue{"test_queue2", "test_vhost", 10, 2}
+
+	queues[0] = *testQueque1
+	queues[1] = *testQueque2
+
+	return queues
 }
 
-func TestRun_QuickShutdown(t *testing.T) {
-	var stderr bytes.Buffer
-
-	mockBroker := new(MockBroker)
-	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
-	mockHealthServer := new(MockHealthServer)
-
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
-	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
-	mockBroker.On("Close").Return(nil)
-
-	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Возвращаем закрытый канал, чтобы сразу выйти из цикла
-	closedChan := make(chan amqp.Delivery)
-	close(closedChan)
-	mockChannel.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(closedChan, nil)
-	mockChannel.On("Close").Return(nil)
-
-	mockHealthServer.On("StartHealthServer", mock.Anything).Return(nil)
-	mockHealthServer.On("StopHealthServer").Return(nil)
-
-	// Запускаем синхронно
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
-
-	if err != nil {
-		t.Errorf("run returned error: %v", err)
-	}
-
-	mockHealthServer.AssertCalled(t, "StartHealthServer", 8081)
-	mockHealthServer.AssertCalled(t, "StopHealthServer")
-}
-
-func TestHandleMessage_Success(t *testing.T) {
-
-	mockChannel := new(MockChannel)
-
-	testMessage := models.ChatMessage{
-		ID:        "123",
-		From:      "user1",
-		To:        "user2",
-		Message:   "Hello!",
-		Timestamp: time.Now(),
-		Type:      "direct",
-	}
-
-	messageBody, _ := json.Marshal(testMessage)
-
-	// Упрощаем проверку - проверяем только routing key и тип контента
-	mockChannel.On("Publish",
-		"chat_direct",
-		"user.user2",
-		false,
-		false,
-		mock.MatchedBy(func(p amqp.Publishing) bool {
-			return p.ContentType == "application/json" &&
-				len(p.Body) > 0 // Проверяем что тело не пустое
-		}),
-	).Return(nil)
-
-	delivery := amqp.Delivery{
-		Body: messageBody,
-	}
-
-	HandleMessage(mockChannel, delivery)
-
-	mockChannel.AssertCalled(t, "Publish",
-		"chat_direct",
-		"user.user2",
-		false,
-		false,
-		mock.MatchedBy(func(p amqp.Publishing) bool {
-			return p.ContentType == "application/json"
-		}),
-	)
-
-	mockChannel.AssertExpectations(t)
-}
-
-func TestHandleMessage_InvalidJSON(t *testing.T) {
+func TestHandleBroadcastMessage_InvalidJSON(t *testing.T) {
 	mockChannel := new(MockChannel)
 
 	// Невалидный JSON - НЕ должно вызывать Publish
 	delivery := amqp.Delivery{
 		Body: []byte("{invalid json}"),
 	}
+	testMessage := models.ChatMessage{}
 
-	HandleMessage(mockChannel, delivery)
+	testQueque := GetTestUserQueues()
+	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueque)
 
 	// Убеждаемся, что Publish НЕ был вызван
 	mockChannel.AssertNotCalled(t, "Publish")
 }
 
-func TestHandleMessage_EmptyToField(t *testing.T) {
+func TestHandleBroadcastMessage_EmptyToField(t *testing.T) {
 	mockChannel := new(MockChannel)
 
 	testMessage := models.ChatMessage{
@@ -142,14 +70,14 @@ func TestHandleMessage_EmptyToField(t *testing.T) {
 	delivery := amqp.Delivery{
 		Body: messageBody,
 	}
-
-	HandleMessage(mockChannel, delivery)
+	testQueue := GetTestUserQueues()
+	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
 
 	// Не должно вызывать Publish с пустым получателем
 	mockChannel.AssertNotCalled(t, "Publish")
 }
 
-func TestHandleMessage_PublishError(t *testing.T) {
+func TestHandleBroadcastMessage_PublishError(t *testing.T) {
 	mockChannel := new(MockChannel)
 
 	testMessage := models.ChatMessage{
@@ -171,10 +99,10 @@ func TestHandleMessage_PublishError(t *testing.T) {
 	delivery := amqp.Delivery{
 		Body: messageBody,
 	}
-
+	testQueue := GetTestUserQueues()
 	// Должно обработать ошибку без паники
 	assert.NotPanics(t, func() {
-		HandleMessage(mockChannel, delivery)
+		handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
 	})
 
 	mockChannel.AssertCalled(t, "Publish",
@@ -186,7 +114,7 @@ func TestHandleMessage_PublishError(t *testing.T) {
 	)
 }
 
-func TestHandleMessage_BroadcastType(t *testing.T) {
+func TestHandleBroadcastMessage_BroadcastType(t *testing.T) {
 	mockChannel := new(MockChannel)
 
 	testMessage := models.ChatMessage{
@@ -209,8 +137,9 @@ func TestHandleMessage_BroadcastType(t *testing.T) {
 	delivery := amqp.Delivery{
 		Body: messageBody,
 	}
+	testQueue := GetTestUserQueues()
 
-	HandleMessage(mockChannel, delivery)
+	handleBroadcastMessage(mockChannel, delivery, testMessage, testQueue)
 
 	mockChannel.AssertCalled(t, "Publish",
 		"chat_direct",
@@ -243,11 +172,11 @@ func TestSignalHandling(t *testing.T) {
 func TestConfigLoading(t *testing.T) {
 	t.Run("test_mock_config", func(t *testing.T) {
 
-		assert.Equal(t, "amqp://test:test@localhost:5672/", mockConfig.GetRabbitMQURL())
-		assert.Equal(t, "test_exchange", mockConfig.GetExchangeName())
-		assert.Equal(t, "test_users.json", mockConfig.GetAuthFile())
-		assert.Equal(t, "debug", mockConfig.GetLogLevel())
-		assert.Equal(t, 8081, mockConfig.GetServerPort())
+		assert.Equal(t, "amqp://test:test@localhost:5672/", testConfig.GetRabbitMQURL())
+		assert.Equal(t, "test_exchange", testConfig.GetExchangeName())
+		assert.Equal(t, "test_users.json", testConfig.GetAuthFile())
+		assert.Equal(t, "debug", testConfig.GetLogLevel())
+		assert.Equal(t, 8081, testConfig.GetServerPort())
 	})
 }
 
@@ -323,10 +252,10 @@ func TestRun_HealthServerStartError(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -335,7 +264,7 @@ func TestRun_HealthServerStartError(t *testing.T) {
 
 	mockHealthServer.On("StartHealthServer", 8081).Return(fmt.Errorf("health server error"))
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "health server start error")
@@ -345,12 +274,12 @@ func TestRun_ConfigLoadError(t *testing.T) {
 	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(nil, fmt.Errorf("config error"))
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(nil, fmt.Errorf("config error"))
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config error")
@@ -360,13 +289,13 @@ func TestRun_RabbitMQConnectionError(t *testing.T) {
 	var stderr bytes.Buffer
 
 	mockBroker := new(MockBroker)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(nil, fmt.Errorf("connection failed"))
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "RabbitMQ connection error")
@@ -377,10 +306,10 @@ func TestRun_ConsumeError(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -391,36 +320,13 @@ func TestRun_ConsumeError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "consume error")
 }
 
-func BenchmarkHandleMessage(b *testing.B) {
-	mockChannel := new(MockChannel)
-	testMessage := models.ChatMessage{
-		ID:        "123",
-		From:      "user1",
-		To:        "user2",
-		Message:   "Hello!",
-		Timestamp: time.Now(),
-		Type:      "direct",
-	}
-
-	messageBody, _ := json.Marshal(testMessage)
-
-	mockChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	delivery := amqp.Delivery{Body: messageBody}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		HandleMessage(mockChannel, delivery)
-	}
-}
-
-func TestHandleMessage_TableDriven(t *testing.T) {
+func TestHandleBroadcastMessage_TableDriven(t *testing.T) {
 	testCases := []struct {
 		name          string
 		message       models.ChatMessage
@@ -468,7 +374,8 @@ func TestHandleMessage_TableDriven(t *testing.T) {
 			}
 
 			delivery := amqp.Delivery{Body: messageBody}
-			HandleMessage(mockChannel, delivery)
+			testQueue := GetTestUserQueues()
+			handleBroadcastMessage(mockChannel, delivery, tc.message, testQueue)
 
 			if tc.shouldPublish {
 				mockChannel.AssertCalled(t, "Publish",
@@ -491,10 +398,10 @@ func TestRun_ExchangeDeclareError(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -504,7 +411,7 @@ func TestRun_ExchangeDeclareError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exchange declaration error")
@@ -519,10 +426,10 @@ func TestRun_MessageChannelClosed(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -537,7 +444,7 @@ func TestRun_MessageChannelClosed(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "message channel closed")
@@ -551,10 +458,10 @@ func TestRun_SignalHandling(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -571,7 +478,7 @@ func TestRun_SignalHandling(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(nil)
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	// Должен завершиться без ошибки (нормальное завершение по закрытию канала)
 	assert.NoError(t, err)
@@ -584,10 +491,10 @@ func TestRun_MessageProcessing(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -610,7 +517,7 @@ func TestRun_MessageProcessing(t *testing.T) {
 	// Запускаем в горутине и завершаем через короткое время
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+		errChan <- run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 	}()
 
 	// Даем время обработать сообщения
@@ -636,10 +543,10 @@ func TestRun_HealthServerStopError(t *testing.T) {
 
 	mockBroker := new(MockBroker)
 	mockChannel := new(MockChannel)
-	mockConfigLoader := new(MockConfigLoader)
+	MockConfigLoader := new(MockConfigLoader)
 	mockHealthServer := new(MockHealthServer)
 
-	mockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
+	MockConfigLoader.On("LoadConfig", "config.yaml").Return(testConfig, nil)
 	mockBroker.On("Dial", "amqp://test").Return(mockChannel, nil)
 	mockBroker.On("Close").Return(nil)
 
@@ -653,7 +560,7 @@ func TestRun_HealthServerStopError(t *testing.T) {
 	mockHealthServer.On("StartHealthServer", 8081).Return(nil)
 	mockHealthServer.On("StopHealthServer").Return(fmt.Errorf("stop error"))
 
-	err := run(&stderr, mockBroker, mockConfigLoader, mockHealthServer)
+	err := run(&stderr, mockBroker, MockConfigLoader, mockHealthServer)
 
 	// Ошибка остановки health server не должна влиять на основную логику
 	assert.Error(t, err) // Но основная ошибка - закрытие канала

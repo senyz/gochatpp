@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -30,29 +31,67 @@ func main() {
 	}
 }
 
-func HandleMessage(ch Channel, msg amqp.Delivery) {
+// func handleBroadcastMessage(ch Channel, msg amqp.Delivery, cfg config.Config) {
+
+// handleBroadcastMessage рассылает broadcast всем активным пользователям
+func handleBroadcastMessage(ch Channel, msg amqp.Delivery, chatMsg models.ChatMessage, userQueues []Queue) {
+	log.Printf("Processing broadcast from %s: %s", chatMsg.From, chatMsg.Message)
+
+	// Рассылаем сообщение ВСЕМ пользователям, включая отправителя
+	successCount := 0
+	for _, queue := range userQueues {
+		err := ch.Publish(
+			"",         // используем default exchange
+			queue.Name, // отправляем напрямую в очередь пользователя
+			false,      // mandatory
+			false,      // immediate
+			amqp.Publishing{
+				ContentType: "application/json",
+				Body:        msg.Body, // оригинальное сообщение
+				Headers: amqp.Table{
+					"broadcast": true,
+					"from":      chatMsg.From,
+					"timestamp": time.Now().Format(time.RFC3339),
+				},
+			},
+		)
+
+		if err != nil {
+			log.Printf("Failed to send to queue %s: %v", queue.Name, err)
+		} else {
+			successCount++
+		}
+	}
+
+	log.Printf("Broadcast from %s delivered to %d users (including sender)",
+		chatMsg.From, successCount)
+}
+
+// HandleMessage обрабатывает входящие сообщения из очереди chat_messages
+func HandleMessage(ch Channel, delivery amqp.Delivery, cfg config.Config) {
 	var chatMsg models.ChatMessage
-	if err := json.Unmarshal(msg.Body, &chatMsg); err != nil {
-		log.Printf("Message parsing error: %v", err)
+
+	if err := json.Unmarshal(delivery.Body, &chatMsg); err != nil {
+		log.Printf("Error parsing JSON: %v", err)
 		return
 	}
-
-	if chatMsg.To == "" {
-		log.Printf("Empty recipient in message from %s", chatMsg.From)
-		return
-	}
-
-	err := ch.Publish(
-		"chat_direct",
-		"user."+chatMsg.To,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        msg.Body,
-		})
-
+	chatQueue, err := getActiveUserQueues(cfg)
 	if err != nil {
-		log.Printf("Failed to deliver message to %s: %v", chatMsg.To, err)
+		log.Printf("Error getting active user queues: %v", err)
+
+	}
+	// Валидация сообщения
+	if chatMsg.From == "" || chatMsg.Message == "" {
+		log.Printf("Invalid message: empty from or message field")
+		return
+	}
+
+	// Определяем тип сообщения по routing key или полю Type
+	if delivery.RoutingKey == "broadcast" || chatMsg.Type == "broadcast" {
+		handleBroadcastMessage(ch, delivery, chatMsg, chatQueue)
+	} else {
+		// Direct сообщения просто логируем (они уже доставлены напрямую)
+		log.Printf("Direct message from %s to %s: %s",
+			chatMsg.From, chatMsg.To, chatMsg.Message)
 	}
 }

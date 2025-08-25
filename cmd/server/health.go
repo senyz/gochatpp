@@ -38,8 +38,7 @@ func (s *RealHealthServer) StartHealthServer(ctx context.Context, port int) erro
 
 		// Перехватываем ошибки сервера
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Health server error: %v", err)
-			errChan <- err
+			errChan <- fmt.Errorf("server ListenAndServe failed: %w", err)
 		}
 		close(errChan) // Закрываем канал после завершения
 	}()
@@ -52,15 +51,18 @@ func (s *RealHealthServer) StartHealthServer(ctx context.Context, port int) erro
 		}
 		return ctx.Err()
 	case err := <-errChan:
-		if err == nil {
-			return nil
-		}
+
 		return err
 	}
 
 }
 
 func (s *RealHealthServer) StopHealthServer() error {
-	err := s.server.Close()
-	return err
+	if s.server == nil {
+		return fmt.Errorf("server is not initialized")
+	}
+	if err := s.server.Shutdown(context.Background()); err != nil {
+		return fmt.Errorf("server shutdown failed: %w", err)
+	}
+	return nil
 }

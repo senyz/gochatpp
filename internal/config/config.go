@@ -9,6 +9,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+/*
+rabbitmq:
+
+	url: "amqp://admin:password123@rabbitmq:5672/"
+	user: "admin"
+	pass: "password123"
+	host: "rabbitmq"
+	port: 5672
+*/
 type RabbitMQConfig struct {
 	URL  string `yaml:"url" json:"url"`
 	User string `yaml:"user" json:"user"`

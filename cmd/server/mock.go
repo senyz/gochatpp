@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+
+
 // MockChannel мок для rabbitmq.Channel
 type MockChannel struct {
 	mock.Mock
@@ -82,8 +84,16 @@ type MockConfig struct {
 	AuthFile     string
 	LogLevel     string
 	ServerPort   int
+	Pass         string
+	User         string
 }
 
+func (m *MockConfig) GetRabbitUser() string {
+	return m.RabbitMQURL
+}
+func (m *MockConfig) GetRabbitPass() string {
+	return m.RabbitMQURL
+}
 func (m *MockConfig) GetRabbitMQURL() string {
 	return m.RabbitMQURL
 }
